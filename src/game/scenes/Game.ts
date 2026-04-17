@@ -41,16 +41,18 @@ export class Game extends Scene {
         for (const [col, row] of this.treeNodeTileAnchors) {
             const marker = this.add.zone(col * tileSize, row * tileSize, 1, 1);
             marker.setOrigin(0, 0);
-            marker.setData('spawn_cooldown', 10);
-            marker.setData('current_cooldown', 10);
+            marker.setData('spawn_cooldown', 1);
+            marker.setData('current_cooldown', 1);
+            marker.setData('max_spawns', 10);
+            marker.setData('current_spawns', 0);
             this.treeNodes.add(marker);
         }
     }
 
-    private checkNodeCooldowns() {
+    private checkNodeCooldowns(delta_s : number) {
         const treeNodes = this.treeNodes.getChildren() as Phaser.GameObjects.Zone[];
         for (const treeNode of treeNodes) {
-            treeNode.data.inc('current_cooldown', -1);
+            treeNode.data.inc('current_cooldown', -delta_s);
             if (treeNode.getData('current_cooldown') <= 0) {
                 this.spawnTreesAroundNode(2, 100, treeNode);
                 treeNode.setData('current_cooldown', treeNode.getData('spawn_cooldown'));
@@ -60,6 +62,9 @@ export class Game extends Scene {
 
     private spawnTreesAroundNode (amt: number, radius: number, node: Phaser.GameObjects.Zone) {
         for (let i = 0; i < amt; i++) {
+            if (node.getData('current_spawns') >= node.getData('max_spawns')) {
+                break;
+            }
             const angle = Math.random() * 2 * Math.PI;
             const mag = Math.random() * radius;
             const x = node.x + Math.cos(angle) * mag;
@@ -68,6 +73,8 @@ export class Game extends Scene {
             tree.setDepth(tree.y + tree.x * 1e-4);
             tree.setData('health', 100);
             tree.setData('last_hit_rev', -1);
+            tree.setData('spawn_node', node);
+            node.data.inc('current_spawns', 1);
             this.trees.add(tree);
         }
     }
@@ -86,6 +93,10 @@ export class Game extends Scene {
                 tree.data.inc('health', -50);
                 tree.setData('last_hit_rev', this.machine.getData('rev'));
                 if (tree.getData('health') <= 0) {
+                    const node = tree.getData('spawn_node') as Phaser.GameObjects.Zone | undefined;
+                    if (node) {
+                        node.data.inc('current_spawns', -1);
+                    }
                     tree.destroy();
                 }
             } else {
@@ -140,11 +151,11 @@ export class Game extends Scene {
     }
 
     update (_time: number, _delta: number) {
+        const delta_s = _delta / 1000;
         const p = this.input.activePointer;
         this.machine.setPosition(p.worldX, p.worldY);
-
-        this.machine.rotation += 0.5;
-        this.machine.data.inc('rot_until_next', -0.5);
+        this.machine.rotation += 5 * delta_s;
+        this.machine.data.inc('rot_until_next', -5 * delta_s);
         if (this.machine.getData('rot_until_next') <= 0) {
             this.machine.data.inc('rev', 1);
             this.machine.setData('rot_until_next', 2 * Math.PI + this.machine.getData('rot_until_next'));
@@ -156,6 +167,6 @@ export class Game extends Scene {
         this.laserBeam.setRotation(angle);
         this.laserBeam.setScale((this.laserRange / 128) * 0.5, 0.5);
         this.checkLaserTreeCollisions();
-        this.checkNodeCooldowns();
+        this.checkNodeCooldowns(delta_s);
     }
 }
