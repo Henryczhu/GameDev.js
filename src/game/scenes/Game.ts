@@ -1,6 +1,9 @@
 import { Scene } from 'phaser';
-import * as Phaser from 'phaser'
+import * as Phaser from 'phaser';
 import { EventBus } from '../EventBus';
+import { Machine } from '../objects/Machine';
+import { Tree } from '../objects/Tree';
+import { TreeNode } from '../objects/TreeNode';
 
 export class Game extends Scene {
     private tileGrid: number[][] = [];
@@ -13,8 +16,7 @@ export class Game extends Scene {
     ];
     private treeNodes!: Phaser.GameObjects.Group;
     private trees!: Phaser.GameObjects.Group;
-    private machine!: Phaser.GameObjects.Sprite;
-    private laserBeam!: Phaser.GameObjects.Sprite;
+    private machines!: Phaser.GameObjects.Group;
     private readonly laserRange = 100;
 
     constructor () {
@@ -39,75 +41,103 @@ export class Game extends Scene {
         const tileSize = 16;
         this.treeNodes = this.add.group();
         for (const [col, row] of this.treeNodeTileAnchors) {
-            const marker = this.add.zone(col * tileSize, row * tileSize, 1, 1);
-            marker.setOrigin(0, 0);
-            marker.setData('spawn_cooldown', 1);
-            marker.setData('current_cooldown', 1);
-            marker.setData('max_spawns', 10);
-            marker.setData('current_spawns', 0);
+            const marker = new TreeNode(this, col * tileSize, row * tileSize);
             this.treeNodes.add(marker);
         }
     }
 
-    private checkNodeCooldowns(delta_s : number) {
-        const treeNodes = this.treeNodes.getChildren() as Phaser.GameObjects.Zone[];
-        for (const treeNode of treeNodes) {
-            treeNode.data.inc('current_cooldown', -delta_s);
-            if (treeNode.getData('current_cooldown') <= 0) {
+    private checkNodeCooldowns(deltaS: number) {
+        const nodes = this.treeNodes.getChildren() as TreeNode[];
+        for (const treeNode of nodes) {
+            if (treeNode.tickCooldown(deltaS)) {
                 this.spawnTreesAroundNode(2, 100, treeNode);
-                treeNode.setData('current_cooldown', treeNode.getData('spawn_cooldown'));
             }
         }
     }
 
-    private spawnTreesAroundNode (amt: number, radius: number, node: Phaser.GameObjects.Zone) {
+    private spawnTreesAroundNode(amt: number, radius: number, node: TreeNode) {
         for (let i = 0; i < amt; i++) {
-            if (node.getData('current_spawns') >= node.getData('max_spawns')) {
+            if (node.currentSpawns >= node.maxSpawns) {
                 break;
             }
             const angle = Math.random() * 2 * Math.PI;
             const mag = Math.random() * radius;
             const x = node.x + Math.cos(angle) * mag;
             const y = node.y + Math.sin(angle) * mag;
-            const tree = this.add.sprite(x, y, 'trees', 0).setOrigin(0, 0);
-            tree.setDepth(tree.y + tree.x * 1e-4);
-            tree.setData('health', 100);
-            tree.setData('last_hit_rev', -1);
-            tree.setData('spawn_node', node);
-            node.data.inc('current_spawns', 1);
+            const tree = new Tree(this, x, y, node);
             this.trees.add(tree);
         }
     }
 
+    private spawnDamagePopup(tree: Tree, amount: number) {
+        const b = tree.getBounds();
+        const x = b.x + b.width * 0.5 + Phaser.Math.Between(-10, 10);
+        const y = b.y + b.height * 0.5 + Phaser.Math.Between(-6, 2);
+        const text = this.add.text(x, y, `-${amount}`, {
+            fontFamily: 'Arial, sans-serif',
+            fontSize: '14px',
+            color: '#ff7966',
+            stroke: '#5c211a',
+            strokeThickness: 3,
+        });
+        text.setOrigin(0.5, 0.5);
+        text.setDepth(100_000);
+        this.tweens.add({
+            targets: text,
+            y: text.y - 36,
+            alpha: 0,
+            duration: 1000,
+            ease: 'Sine.easeOut',
+            onComplete: () => {
+                text.destroy();
+            },
+        });
+    }
+
     private checkLaserTreeCollisions() {
-        const laserBounds = this.laserBeam.getBounds();
-        const trees = this.trees.getChildren() as Phaser.GameObjects.Sprite[];
+        const trees = this.trees.getChildren() as Tree[];
+        const machines = this.machines.getChildren() as Machine[];
 
         for (const tree of trees) {
-            const hit = Phaser.Geom.Intersects.RectangleToRectangle(laserBounds, tree.getBounds());
-            if (hit) {
-                if (tree.getData('last_hit_rev') == this.machine.getData('rev')) {
+            let overlappingAny = false;
+            for (const machine of machines) {
+                const laserBounds = machine.laser.getBounds();
+                const hit = Phaser.Geom.Intersects.RectangleToRectangle(laserBounds, tree.getBounds());
+                if (!hit) {
                     continue;
                 }
-                tree.setTint(0xff7777);
-                tree.data.inc('health', -50);
-                tree.setData('last_hit_rev', this.machine.getData('rev'));
-                if (tree.getData('health') <= 0) {
-                    const node = tree.getData('spawn_node') as Phaser.GameObjects.Zone | undefined;
-                    if (node) {
-                        node.data.inc('current_spawns', -1);
-                    }
-                    tree.destroy();
+                overlappingAny = true;
+                if (tree.lastHitMachineId === machine.id && tree.lastHitRev === machine.rev) {
+                    continue;
                 }
-            } else {
+                const damage = machine.laser.damage;
+                tree.setTint(0xff7777);
+                tree.health -= damage;
+                this.spawnDamagePopup(tree, damage);
+                tree.lastHitMachineId = machine.id;
+                tree.lastHitRev = machine.rev;
+                if (tree.health <= 0) {
+                    tree.destroy();
+                    break;
+                }
+            }
+            if (!overlappingAny) {
                 tree.clearTint();
             }
         }
     }
 
+    private placeMachine(pointer: Phaser.Input.Pointer) {
+        if (!pointer.leftButtonDown()) {
+            return;
+        }
+        const machine = new Machine(this, pointer.worldX, pointer.worldY);
+        this.machines.add(machine);
+    }
+
     preload () {
         this.load.setPath('assets');
-        
+
         this.load.spritesheet('ground_tiles', 'ground_tiles.png', {
             frameWidth: 16,
             frameHeight: 16
@@ -121,14 +151,14 @@ export class Game extends Scene {
         this.load.spritesheet('laser', 'laser.png', {
             frameWidth: 128,
             frameHeight: 64,
-        })
-        
+        });
 
         this.createTileGrid();
     }
 
-    create () {   
+    create () {
         this.trees = this.add.group();
+        this.machines = this.add.group();
 
         for (let r = 0; r < this.tileGrid.length; r++) {
             for (let c = 0; c < this.tileGrid[r].length; c++) {
@@ -137,36 +167,25 @@ export class Game extends Scene {
         }
         this.createTreeNodes();
         for (const node of this.treeNodes.getChildren()) {
-            this.spawnTreesAroundNode(5, 100, node as Phaser.GameObjects.Zone);
+            this.spawnTreesAroundNode(5, 100, node as TreeNode);
         }
-        const p = this.input.activePointer;
-        this.machine = this.add.sprite(p.worldX, p.worldY, 'machine');
-        this.machine.setData('rev', 0);
-        this.machine.setData('rot_until_next', 2 * Math.PI);
-        this.laserBeam = this.add.sprite(p.worldX, p.worldY, 'laser', 1)
-            .setOrigin(0, 0.5)
-            .setScale(0.5)
-            .setDepth(this.machine.depth + 1);
+
+        this.input.on('pointerdown', this.placeMachine, this);
+        this.events.once('shutdown', () => {
+            this.input.off('pointerdown', this.placeMachine, this);
+        });
+
         EventBus.emit('current-scene-ready', this);
     }
 
-    update (_time: number, _delta: number) {
-        const delta_s = _delta / 1000;
-        const p = this.input.activePointer;
-        this.machine.setPosition(p.worldX, p.worldY);
-        this.machine.rotation += 5 * delta_s;
-        this.machine.data.inc('rot_until_next', -5 * delta_s);
-        if (this.machine.getData('rot_until_next') <= 0) {
-            this.machine.data.inc('rev', 1);
-            this.machine.setData('rot_until_next', 2 * Math.PI + this.machine.getData('rot_until_next'));
+    update (_time: number, delta: number) {
+        const deltaS = delta / 1000;
+        const machines = this.machines.getChildren() as Machine[];
+        for (const machine of machines) {
+            machine.tick(deltaS);
+            machine.laser.alignTo(machine, this.laserRange);
         }
-
-        let angle = this.machine.rotation - Math.PI / 4;
-        let disp = [Math.cos(angle) * 10, Math.sin(angle) * 10]
-        this.laserBeam.setPosition(p.worldX + disp[0], p.worldY + disp[1]);
-        this.laserBeam.setRotation(angle);
-        this.laserBeam.setScale((this.laserRange / 128) * 0.5, 0.5);
         this.checkLaserTreeCollisions();
-        this.checkNodeCooldowns(delta_s);
+        this.checkNodeCooldowns(deltaS);
     }
 }
